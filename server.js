@@ -1,56 +1,59 @@
 const express = require('express');
 const cors = require('cors');
-const https = require('https');
+const Anthropic = require('@anthropic-ai/sdk');
 
 const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 app.use(express.static('.'));
 
-app.post('/chat', (req, res) => {
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY
+});
+
+// Rate limiting: máximo de requisições por IP por janela de tempo
+const rateLimitMap = new Map();
+const WINDOW_MS = 60 * 1000; // 1 minuto
+const MAX_REQUESTS = 10;      // máximo 10 mensagens por minuto por IP
+
+function rateLimit(req, res, next) {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  const now = Date.now();
+  const record = rateLimitMap.get(ip) || { count: 0, start: now };
+
+  if (now - record.start > WINDOW_MS) {
+    record.count = 1;
+    record.start = now;
+  } else {
+    record.count++;
+  }
+
+  rateLimitMap.set(ip, record);
+
+  if (record.count > MAX_REQUESTS) {
+    return res.status(429).json({ reply: 'Muitas mensagens em pouco tempo. Aguarde um momento.' });
+  }
+
+  next();
+}
+
+app.post('/chat', rateLimit, async (req, res) => {
   const { messages, systemPrompt } = req.body;
 
-  const body = JSON.stringify({
-    model: 'gpt-4o-mini',
-    max_tokens: 1024,
-    messages: [
-      { role: 'system', content: systemPrompt || 'You are a helpful assistant.' },
-      ...messages
-    ]
-  });
-
-  const options = {
-    hostname: 'api.openai.com',
-    path: '/v1/chat/completions',
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + process.env.OPENAI_API_KEY,
-      'Content-Length': Buffer.byteLength(body)
-    }
-  };
-
-  const request = https.request(options, (response) => {
-    let data = '';
-    response.on('data', function(chunk) { data += chunk; });
-    response.on('end', function() {
-      const parsed = JSON.parse(data);
-      console.log('OpenAI response:', JSON.stringify(parsed));
-      if (parsed.choices && parsed.choices[0]) {
-        res.json({ reply: parsed.choices[0].message.content });
-      } else {
-        res.json({ reply: 'Error: ' + JSON.stringify(parsed) });
-      }
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5',         // mais barato para chatbot
+      max_tokens: 1024,
+      system: systemPrompt || 'You are a helpful assistant.',
+      messages: messages
     });
-  });
 
-  request.on('error', function(e) {
-    res.status(500).json({ error: e.message });
-  });
-
-  request.write(body);
-  request.end();
+    res.json({ reply: response.content[0].text });
+  } catch (error) {
+    console.error('Anthropic error:', error.message);
+    res.status(500).json({ reply: 'Erro ao conectar com a IA. Tente novamente.' });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, function() { console.log('Server running on port ' + PORT); });
+app.listen(PORT, () => console.log('Server running on port ' + PORT));
