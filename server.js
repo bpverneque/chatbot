@@ -34,10 +34,14 @@ app.post('/chat', (req, res) => {
     let data = '';
     response.on('data', chunk => data += chunk);
     response.on('end', () => {
-      const parsed = JSON.parse(data);
-      res.json({ reply: parsed.choices[0].message.content });
-    });
-  });
+  const parsed = JSON.parse(data);
+  console.log('OpenAI response:', JSON.stringify(parsed));
+  if (parsed.choices && parsed.choices[0]) {
+    res.json({ reply: parsed.choices[0].message.content });
+  } else {
+    res.json({ reply: 'Error: ' + JSON.stringify(parsed) });
+  }
+});
 
   request.on('error', (e) => {
     res.status(500).json({ error: e.message });
